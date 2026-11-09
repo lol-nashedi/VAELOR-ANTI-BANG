@@ -1,0 +1,220 @@
+-- VÆLOR 360° ANTI BANG
+
+if _G.AntiBang_Shutdown then
+    pcall(_G.AntiBang_Shutdown)
+    _G.AntiBang_Shutdown = nil
+end
+
+local Players          = game:GetService("Players")
+local RunService       = game:GetService("RunService")
+local StarterGui       = game:GetService("StarterGui")
+local UserInputService = game:GetService("UserInputService")
+
+local LocalPlayer = Players.LocalPlayer
+
+-- {{ toggle }}
+
+local CONFIG = {
+    ENABLED = true, -- turn anti off or on (use true or false)
+}
+
+local NOTIFY = true -- notify if it succeeded (use true or false)
+
+local function getTorso(char)
+    if not char then return nil end
+    return char:FindFirstChild("Torso")
+        or char:FindFirstChild("UpperTorso")
+        or char:FindFirstChild("LowerTorso")
+        or char:FindFirstChild("HumanoidRootPart")
+end
+
+local function getRoot(char)
+    if not char then return nil end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    return (hum and hum.RootPart) or char.PrimaryPart
+end
+
+local function notify(title, text)
+    if not NOTIFY then return end
+    pcall(function()
+        StarterGui:SetCore("SendNotification", {
+            Title = title, Text = text, Duration = 3
+        })
+    end)
+end
+
+-- Har direction ka pattern. offset = attacker aapke torso se kahan hota hai
+-- (aapke torso ke hisaab se: X = right, Y = upar, Z = peeche)
+-- tol    = kitna farak chalega
+-- facing = 1 (same taraf dekh raha), -1 (aapki taraf dekh raha), nil (koi bhi)
+-- frames = kitne frame lagatar match hone par confirm maane
+local PATTERNS = {
+    { name = "Back",  offset = Vector3.new(0, 0, 1.1),  tol = 0.25, facing = 1,   frames = 5 },
+    { name = "Front", offset = Vector3.new(0, 0, -1.1), tol = 0.25, facing = -1,  frames = 5 },
+    { name = "Left",  offset = Vector3.new(-1.1, 0, 0), tol = 0.30, facing = nil, frames = 6 },
+    { name = "Right", offset = Vector3.new(1.1, 0, 0),  tol = 0.30, facing = nil, frames = 6 },
+    { name = "Above", offset = Vector3.new(0, 2, 0),    tol = 0.40, facing = nil, frames = 8 },
+    { name = "Below", offset = Vector3.new(0, -2, 0),   tol = 0.40, facing = nil, frames = 8 },
+}
+
+local function matchPattern(p, localOffset, dot)
+    local d = localOffset - p.offset
+    if math.abs(d.X) > p.tol or math.abs(d.Y) > p.tol or math.abs(d.Z) > p.tol then
+        return false
+    end
+    if p.facing == 1 and dot < 0.995 then return false end
+    if p.facing == -1 and dot > -0.995 then return false end
+    return true
+end
+
+-- Match hone par pattern wapas deta hai, warna nil
+local function detectBang(plr, myTorso)
+    local theirChar = plr.Character
+    if not theirChar then return nil end
+
+    local theirHRP = theirChar:FindFirstChild("HumanoidRootPart")
+    if not theirHRP then return nil end
+
+    local localOffset = myTorso.CFrame:PointToObjectSpace(theirHRP.Position)
+    local dot = theirHRP.CFrame.LookVector:Dot(myTorso.CFrame.LookVector)
+
+    for _, p in ipairs(PATTERNS) do
+        if matchPattern(p, localOffset, dot) then
+            return p
+        end
+    end
+    return nil
+end
+
+local dipBusy = false
+local function voidDip()
+    if dipBusy then return end
+    local myChar = LocalPlayer.Character
+    if not myChar then return end
+    local root = getRoot(myChar)
+    if not root or not root.Parent then return end
+
+    dipBusy = true
+    local savedCF = root.CFrame
+    local savedDH = workspace.FallenPartsDestroyHeight
+
+    workspace.FallenPartsDestroyHeight = -1e9
+
+    local t0 = tick()
+    pcall(function()
+        while tick() - t0 < 0.15 do
+            if not root.Parent then break end
+            root.CFrame                  = CFrame.new(0, -800, 0)
+            root.AssemblyLinearVelocity  = Vector3.zero
+            root.AssemblyAngularVelocity = Vector3.zero
+            task.wait()
+        end
+    end)
+
+    if root.Parent then
+        root.AssemblyLinearVelocity  = Vector3.zero
+        root.AssemblyAngularVelocity = Vector3.zero
+        root.CFrame                  = savedCF
+        local hum = myChar:FindFirstChildOfClass("Humanoid")
+        if hum then hum:ChangeState(Enum.HumanoidStateType.GettingUp) end
+    end
+
+    task.wait()
+    workspace.FallenPartsDestroyHeight = savedDH
+    dipBusy = false
+end
+
+local confirmCount = {}
+local lastAction   = 0
+
+local steppedConn = RunService.Stepped:Connect(function()
+    if not CONFIG.ENABLED then return end
+    if dipBusy then return end
+
+    local myChar = LocalPlayer.Character
+    if not myChar then return end
+    local myTorso = getTorso(myChar)
+    if not myTorso then return end
+
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and plr.Character then
+            local p = detectBang(plr, myTorso)
+            if p then
+                local rec = confirmCount[plr]
+                if rec and rec.name == p.name then
+                    rec.count += 1
+                else
+                    rec = { name = p.name, count = 1 }
+                    confirmCount[plr] = rec
+                end
+
+                if rec.count >= p.frames then
+                    confirmCount[plr] = nil
+
+                    if tick() - lastAction < 1.5 then
+                        return
+                    end
+                    lastAction = tick()
+
+                    notify("VÆLOR 360° ANTI BANG", "Bang (" .. p.name .. ") from " .. plr.Name)
+                    voidDip()
+                    return
+                end
+            else
+                confirmCount[plr] = nil
+            end
+        end
+    end
+end)
+
+local inputConn = UserInputService.InputBegan:Connect(function(input, processed)
+    if processed then return end
+    if input.KeyCode == Enum.KeyCode.RightControl then
+        CONFIG.ENABLED = not CONFIG.ENABLED
+        notify("VÆLOR 360° ANTI BANG", CONFIG.ENABLED and "Enabled" or "Disabled")
+    end
+end)
+
+local removeConn = Players.PlayerRemoving:Connect(function(plr)
+    confirmCount[plr] = nil
+end)
+
+local charConn = LocalPlayer.CharacterAdded:Connect(function()
+    confirmCount = {}
+    dipBusy      = false
+end)
+
+_G.AntiBang_Shutdown = function()
+    steppedConn:Disconnect()
+    inputConn:Disconnect()
+    removeConn:Disconnect()
+    charConn:Disconnect()
+end
+
+_G.AntiBang_Toggle = function(state)
+    if type(state) == "boolean" then
+        CONFIG.ENABLED = state
+    else
+        CONFIG.ENABLED = not CONFIG.ENABLED
+    end
+    notify("VÆLOR 360° ANTI BANG", CONFIG.ENABLED and "Enabled" or "Disabled")
+end
+
+notify("VÆLOR 360° ANTI BANG", "Loaded")
+
+-- {{ welcome / discord }}
+local discord = "https://discord.gg/rQ4Sv2x7"
+
+-- Copy Discord invite
+if setclipboard then
+    pcall(setclipboard, discord)
+end
+
+-- Welcome notification
+pcall(function()
+    StarterGui:SetCore("SendNotification", {
+        Title = "『VÆLOR』",
+        Text = "welcome to VÆLOR !!,  Join discord to get more fetures",
+        Duration = 30
+    })
+end)
